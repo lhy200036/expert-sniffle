@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>圆形移动游戏 (像素角色版 - 完整音效)</title>
+    <style>
+        body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f0f0f0; font-family: 'Arial', sans-serif; }
+        #game-container { position: relative; width: 1280px; height: 720px; border: 1px solid #ccc; overflow: hidden; background-color: #e0e0e0; display: flex; justify-content: center; align-items: center; }
+        .game-button { padding: 15px 30px; font-size: 24px; color: white; border: none; border-radius: 8px; cursor: pointer; transition: transform 0.1s ease-out, background-color 0.1s ease-out; box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 10; position: absolute; }
+        #play-button { background-color: #4CAF50; }
+        #play-button:hover { background-color: #45a049; }
+        #play-button:active { transform: scale(0.95); background-color: #3e8e41; }
+        #replay-button { background-color: #2196F3; display: none; }
+        #replay-button:hover { background-color: #1e88e5; }
+        #replay-button:active { transform: scale(0.95); background-color: #1976d2; }
+        #line { position: absolute; left: 0; bottom: 50px; width: 200%; height: 2px; background-color: #333; animation: moveGround 2s linear infinite; display: none; z-index: 0; }
+        @keyframes moveGround { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+        
+        #player {
+            position: absolute;
+            display: none; 
+            z-index: 3;
+        }
+        .player-part {
+            position: absolute;
+            background-color: black;
+            transition: all 0.07s ease-out; 
+        }
+        #player-left-arm, #player-right-arm {
+            transform-origin: center top; 
+        }
+
+       .obstacle { position: absolute; background-color: black; z-index: 2; }
+       .particle { position: absolute; width: 6px; height: 6px; background-color: #333; border-radius: 50%; z-index: 4; }
+       #charge-ring-svg { position: absolute; pointer-events: none; z-index: 5; }
+       #charge-ring-path { transition: stroke-dashoffset 0.05s linear, stroke 0.1s linear, opacity 0.1s linear; }
+       #score-display { position: absolute; top: 15px; right: 20px; font-size: 28px; font-weight: bold; color: #333; z-index: 5; }
+       .trail {
+            position: absolute;
+            border-radius: 0; 
+            background-color: rgba(0, 0, 0, 0.35); 
+            pointer-events: none; 
+            z-index: 1; 
+       }
+    </style>
+</head>
+
+<body>
+    <div id="game-container">
+        <button id="play-button" class="game-button">PLAY</button>
+        <button id="replay-button" class="game-button">REPLAY</button>
+        <div id="line"></div>
+        <div id="player"></div> 
+        <div id="score-display">得分: 0</div>
+    </div>
+    <script>
+        // --- DOM Elements ---
+        const GAME_CONTAINER_ELEMENT = document.getElementById('game-container');
+        const PLAYER_ELEMENT = document.getElementById('player'); 
+        const LINE_ELEMENT = document.getElementById('line');
+        const PLAY_BUTTON_ELEMENT = document.getElementById('play-button');
+        const REPLAY_BUTTON_ELEMENT = document.getElementById('replay-button');
+        const SCORE_DISPLAY_ELEMENT = document.getElementById('score-display'); 
+
+        // --- Player Parts (will be assigned in createPlayerParts) ---
+        let PLAYER_HEAD_ELEMENT, PLAYER_BODY_ELEMENT, 
+            PLAYER_LEFT_LEG_ELEMENT, PLAYER_RIGHT_LEG_ELEMENT,
+            PLAYER_LEFT_ARM_ELEMENT, PLAYER_RIGHT_ARM_ELEMENT;
+
+        // --- Audio Setup ---
+        let audioContext; 
+        let audioInitialized = false; 
+
+        function initAudioContext() {
+            if (audioInitialized) return;
+            if (window.AudioContext || window.webkitAudioContext) {
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    if (audioContext.state === 'suspended') {
+                        audioContext.resume().then(() => {
+                            // console.log("AudioContext resumed successfully.");
+                            audioInitialized = true;
+                        }).catch(e => console.error("Error resuming AudioContext:", e));
+                    } else {
+                        audioInitialized = true;
+                        // console.log("AudioContext already running or initialized.");
+                    }
+                } catch (e) {
+                    console.error("Web Audio API is not supported or could not be initialized.", e);
+                }
+            } else {
+                console.warn("Web Audio API not supported.");
+            }
+        }
+        // --- IMPORTANT: REPLACE THESE FILENAMES WITH YOUR ACTUAL AUDIO FILES ---
+        // --- ENSURE THEY ARE IN THE SAME FOLDER AS THIS HTML FILE ---
+        let backgroundMusic = new Audio('G小调的巴赫 (Vince Moonrise Edit).m4a'); // TODO: 替换你的背景音乐文件名
+        backgroundMusic.loop = true;
+        backgroundMusic.volume = 0.05; 
+
+        const sfx = {
+            jump: new Audio('jump.wav'),                         // TODO: 替换你的跳跃音效
+            dash: new Audio('dash.wav'),                         // TODO: 替换你的冲刺音效
+            chargeStart: new Audio('charge_start.wav'),          // TODO: 替换你的开始蓄力音效
+            chargeComplete: new Audio('charge_complete.wav'),    // TODO: 替换你的蓄力完成音效
+            slam: new Audio('slam.wav'),                         // TODO: 替换你的冲击音效
+            obstacleBreak: new Audio('obstacle_break.wav'),      // TODO: 替换你的障碍破坏音效
+            gameOver: new Audio('game_over.wav'),                // TODO: 替换你的游戏结束音效
+            buttonClick: new Audio('button_click.wav'),           // TODO: 替换你的按钮点击音效
+            stepA: new Audio('step_a.wav'),                      // TODO: 替换你的脚步声A
+            stepB: new Audio('step_b.wav'),                      // TODO: 替换你的脚步声B (可与A相同)
+            land: new Audio('land.wav')                          // TODO: 替换你的落地音效
+        };
+
+        Object.values(sfx).forEach(sound => { 
+            if (sound && typeof sound.volume !== 'undefined') sound.volume = 0.5; 
+        });
+        sfx.jump.volume = 0.5;
+        sfx.dash.volume = 0.2;
+        sfx.chargeStart.volume = 0.5;
+        sfx.chargeComplete.volume = 0.5;
+        sfx.slam.volume = 0.5;
+        sfx.obstacleBreak.volume = 0.6;
+        sfx.gameOver.volume = 0.7;
+        sfx.buttonClick.volume = 0.8;
+        sfx.stepA.volume = 0.5; 
+        sfx.stepB.volume = 0.5; 
+        sfx.land.volume = 0.6;   
+
+        let footstepLoopSound = new Audio(sfx.stepA.src); // Uses stepA's source by default
+        footstepLoopSound.loop = true;
+        footstepLoopSound.volume = 0.20;
+        let isFootstepPlaying = false;
+
+        function playSound(audioElement, volume = -1) { 
+            if (!audioInitialized && audioElement !== sfx.buttonClick && audioElement !== backgroundMusic) {
+                 // Attempt to initialize if not done by direct user gesture yet, for other sounds
+                if (!audioContext || audioContext.state === 'suspended') {
+                     // console.warn("Audio system not ready for sound, trying to resume/init:", audioElement.src);
+                     initAudioContext(); // This might not always work if not direct user gesture
+                }
+            }
+            if (!audioElement || !audioElement.src || audioElement.src.endsWith("/null") || audioElement.src === "" || typeof audioElement.play !== 'function') {
+                // console.warn("playSound: Invalid audio element or src:", audioElement ? audioElement.src : "undefined element");
+                return;
+            }
+            
+            audioElement.currentTime = 0; 
+            if (volume >= 0) audioElement.volume = volume;
+            
+            const playPromise = audioElement.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(error => {
+                    // console.warn("Error playing sound " + audioElement.src + ":", error);
+                });
+            }
+        }
+        
+        function createPlayerParts() {
+            PLAYER_ELEMENT.innerHTML = ''; 
+
+            PLAYER_HEAD_ELEMENT = document.createElement('div');
+            PLAYER_HEAD_ELEMENT.id = 'player-head';
+            PLAYER_HEAD_ELEMENT.classList.add('player-part');
+            PLAYER_ELEMENT.appendChild(PLAYER_HEAD_ELEMENT);
+
+            PLAYER_BODY_ELEMENT = document.createElement('div');
+            PLAYER_BODY_ELEMENT.id = 'player-body';
+            PLAYER_BODY_ELEMENT.classList.add('player-part');
+            PLAYER_ELEMENT.appendChild(PLAYER_BODY_ELEMENT);
+
+            PLAYER_LEFT_LEG_ELEMENT = document.createElement('div');
+            PLAYER_LEFT_LEG_ELEMENT.id = 'player-left-leg';
+            PLAYER_LEFT_LEG_ELEMENT.classList.add('player-part');
+            PLAYER_ELEMENT.appendChild(PLAYER_LEFT_LEG_ELEMENT);
+            
+            PLAYER_RIGHT_LEG_ELEMENT = document.createElement('div');
+            PLAYER_RIGHT_LEG_ELEMENT.id = 'player-right-leg';
+            PLAYER_RIGHT_LEG_ELEMENT.classList.add('player-part');
+            PLAYER_ELEMENT.appendChild(PLAYER_RIGHT_LEG_ELEMENT);
+
+            PLAYER_LEFT_ARM_ELEMENT = document.createElement('div');
+            PLAYER_LEFT_ARM_ELEMENT.id = 'player-left-arm';
+            PLAYER_LEFT_ARM_ELEMENT.classList.add('player-part');
+            PLAYER_ELEMENT.appendChild(PLAYER_LEFT_ARM_ELEMENT);
+
+            PLAYER_RIGHT_ARM_ELEMENT = document.createElement('div');
+            PLAYER_RIGHT_ARM_ELEMENT.id = 'player-right-arm';
+            PLAYER_RIGHT_ARM_ELEMENT.classList.add('player-part');
+            PLAYER_ELEMENT.appendChild(PLAYER_RIGHT_ARM_ELEMENT);
+        }
+        
+        let gameState = "menu"; 
+        let animationFrameId = null;
+        let playerY_previousFrame = 0; 
+
+        let GAME_WIDTH = 1280; 
+        let GAME_HEIGHT = 720;
+        const GROUND_LEVEL = 50;
+
+        const PLAYER_BASE_WIDTH = 44; 
+        const PLAYER_BASE_HEIGHT = 60; 
+        let playerWidth = PLAYER_BASE_WIDTH; 
+        let playerHeight = PLAYER_BASE_HEIGHT;
+        let playerX = GAME_WIDTH * 0.1; 
+        let playerY = GROUND_LEVEL;
+
+        let velocity = 0; const acceleration = 0.5; const maxVelocity = 7; const deceleration = 0.25;
+        let isJumping = false; let jumpVelocity = 0; 
+        const jumpPower = 22; 
+        const upGravity = 0.8; 
+        const downGravity = 0.7; 
+        const obstacleGravity = 0.6; 
+        let maxAchievableJumpHeight = 0; 
+
+        let isMovingLeft = false; let isMovingRight = false; let isShiftHeld = false;
+        let walkCycleFrame = 0; 
+
+        const obstacleMinWidth = 40; const obstacleMaxWidth = 60; 
+        const obstacleMinHeight = 80;  const obstacleMaxHeight = 160; 
+
+        const INITIAL_OBSTACLE_SPEED = 3.0; 
+        let currentObstacleSpeed = INITIAL_OBSTACLE_SPEED; 
+        const OBSTACLE_SPEED_INCREMENT = 0.15; 
+        let lastSpeedIncreaseScore = 0; 
+        const pushForce = 6;
+
+        const obstacles = []; 
+        let obstacleTimer = 0; 
+        const obstacleSpawnIntervalMin = 70; const obstacleSpawnIntervalMax = 180; 
+        let allowObstacleSpawn = false;
+
+        const PARTICLE_GRAVITY=0.2; const PARTICLE_FRICTION=0.99; const PARTICLE_LIFESPAN_FRAMES=90; const NUM_PARTICLES_ON_BREAK=12; const BOUNCE_POWER_ON_SMASH=10;
+        let activeParticles = [];
+
+        let isDashing=false; let dashDirection=0; let dashTimer=0; const DASH_DURATION_FRAMES=18; const DASH_SPEED=18; const DASH_COOLDOWN_FRAMES=75; let dashCooldownTimer=0; const DASH_STRETCH_WIDTH_FACTOR=1.8; const DASH_SQUASH_HEIGHT_FACTOR=0.5; const DASH_FALL_SPEED=downGravity*3;
+        let lastTriggeredDashDirection=0;
+
+        let isChargingSpace=false; let chargeTimer=0; const CHARGE_DURATION_FRAMES=60; let isChargeComplete=false; 
+        let chargeHoldTimeoutTimer = 0; const CHARGE_HOLD_TIMEOUT_FRAMES = 120; 
+        let isChargeTimeoutFlashing = false; const FLASH_INTERVAL_FRAMES = 6; 
+        let chargeLockedAfterTimeout = false; 
+
+        let chargeRingElement=null; let chargeRingPath=null; const CHARGE_RING_RADIUS_OFFSET=8; const CHARGE_RING_STROKE_WIDTH=5; let chargeTargetY=0; let chargeStartedInAir=false; const CHARGE_FLOAT_UP_SPEED_FACTOR=0.15; const CHARGE_BOB_FREQUENCY=0.1; const CHARGE_BOB_AMPLITUDE=1.5;
+        let isRippleActive=false; let rippleTimer=0; const RIPPLE_DURATION_FRAMES=30; let rippleStartX=0; let rippleStartY=0; let currentRippleRadius=0; let RIPPLE_MAX_RADIUS = 1000; 
+        let rippleSvgCleanupTimeoutId=null;
+        let spacePressed=false; let spacePressStartTime=0; const HOLD_TO_CHARGE_DURATION_MS=180; 
+
+        let score = 0;
+
+        let trailParticles = [];
+        const TRAIL_SPAWN_INTERVAL = 2; 
+        let trailSpawnCounter = 0;
+        const TRAIL_LIFESPAN_FRAMES = 12; 
+        const TRAIL_INITIAL_OPACITY = 0.35;
+
+        LINE_ELEMENT.style.bottom = GROUND_LEVEL + 'px';
+
+        function calculateJumpPeakYRelative() { let tY=0;let tV=jumpPower;while(tV>0){tY+=tV;tV-=upGravity;}return tY;}
+        
+        function createChargeRing(){ const oldSvg=document.getElementById('charge-ring-svg');if(oldSvg&&oldSvg.parentNode){oldSvg.parentNode.removeChild(oldSvg);} chargeRingElement=null;chargeRingPath=null; chargeRingElement=document.createElementNS("http://www.w3.org/2000/svg","svg");chargeRingElement.setAttribute('id','charge-ring-svg'); const initR=(PLAYER_BASE_WIDTH/2)+CHARGE_RING_RADIUS_OFFSET;const svgS=RIPPLE_MAX_RADIUS*2; chargeRingElement.setAttribute('width',svgS);chargeRingElement.setAttribute('height',svgS); chargeRingPath=document.createElementNS("http://www.w3.org/2000/svg","circle");chargeRingPath.setAttribute('cx',svgS/2);chargeRingPath.setAttribute('cy',svgS/2);chargeRingPath.setAttribute('r',initR);chargeRingPath.setAttribute('fill','none');chargeRingPath.setAttribute('stroke','black');chargeRingPath.setAttribute('stroke-width',CHARGE_RING_STROKE_WIDTH);const circ=2*Math.PI*initR;chargeRingPath.setAttribute('stroke-dasharray',circ);chargeRingPath.setAttribute('stroke-dashoffset',circ); chargeRingElement.appendChild(chargeRingPath);GAME_CONTAINER_ELEMENT.appendChild(chargeRingElement);chargeRingElement.style.display='none';}
+        
+        function triggerDash(){ 
+            if(isChargingSpace||isRippleActive)return;
+            if(isJumping){isJumping=false;jumpVelocity=0;}
+            isDashing=true;dashTimer=DASH_DURATION_FRAMES;
+            dashCooldownTimer=DASH_COOLDOWN_FRAMES+DASH_DURATION_FRAMES;
+            velocity=0;lastTriggeredDashDirection=dashDirection;
+            playSound(sfx.dash);
+        }
+        function startChargeSequence(){ 
+            if(isChargingSpace||isRippleActive)return; 
+            isChargingSpace=true;chargeTimer=0;isChargeComplete=false; 
+            chargeHoldTimeoutTimer = 0; isChargeTimeoutFlashing = false; 
+            PLAYER_ELEMENT.style.opacity = '1'; 
+            isJumping=false;jumpVelocity=0; 
+            if(isDashing){isDashing=false;dashTimer=0;playerWidth=PLAYER_BASE_WIDTH;playerHeight=PLAYER_BASE_HEIGHT;PLAYER_ELEMENT.style.width=playerWidth+'px';PLAYER_ELEMENT.style.height=playerHeight+'px';PLAYER_ELEMENT.style.filter='none';} 
+            chargeStartedInAir=(playerY>GROUND_LEVEL); 
+            if (chargeStartedInAir) { chargeTargetY = playerY; } 
+            else { let calculatedTarget = GROUND_LEVEL + maxAchievableJumpHeight + 5; chargeTargetY = Math.min(calculatedTarget, GAME_HEIGHT - playerHeight - 10); } 
+            if(rippleSvgCleanupTimeoutId){clearTimeout(rippleSvgCleanupTimeoutId);rippleSvgCleanupTimeoutId=null;}
+            createChargeRing();if(chargeRingElement)chargeRingElement.style.display='block';
+            playSound(sfx.chargeStart);
+        }
+        function performSlamAttack(){ 
+            isRippleActive=true;rippleTimer=0;
+            rippleStartX=playerX+playerWidth/2;rippleStartY=GAME_HEIGHT-(playerY+playerHeight/2);
+            currentRippleRadius=parseFloat(chargeRingPath.getAttribute('r'));
+            if(chargeRingPath){chargeRingPath.style.stroke='#FF0000';chargeRingPath.setAttribute('stroke-dashoffset',0);chargeRingPath.style.opacity='0.8';} 
+            if(chargeRingElement){chargeRingElement.style.left=(rippleStartX-RIPPLE_MAX_RADIUS)+'px';chargeRingElement.style.bottom=(GAME_HEIGHT-rippleStartY-RIPPLE_MAX_RADIUS)+'px';}
+            if(playerY>GROUND_LEVEL){isJumping=true;jumpVelocity=-3;}else{isJumping=false;}
+            playSound(sfx.slam);
+        }
+        function checkCircleRectCollision(circ,rect){ let tX=circ.x;let tY=circ.y;if(circ.x<rect.left)tX=rect.left;else if(circ.x>rect.right)tX=rect.right;let rBotY=GAME_HEIGHT-rect.bottom;let rTopY=GAME_HEIGHT-rect.top;if(circ.y<rBotY)tY=rBotY;else if(circ.y>rTopY)tY=rTopY;const dX=circ.x-tX;const dY=circ.y-tY;return Math.sqrt((dX*dX)+(dY*dY))<=circ.r;}
+        
+        function triggerGameOver(){ 
+            gameState='gameOver';
+            PLAYER_ELEMENT.style.display='none';
+            allowObstacleSpawn=false;
+            REPLAY_BUTTON_ELEMENT.style.display='block'; 
+            if(animationFrameId){cancelAnimationFrame(animationFrameId);animationFrameId=null;}
+            
+            if(backgroundMusic && typeof backgroundMusic.pause === 'function' && !backgroundMusic.paused) {
+                backgroundMusic.pause();
+            }
+            if(backgroundMusic) backgroundMusic.currentTime = 0;
+
+            if (isFootstepPlaying && footstepLoopSound && typeof footstepLoopSound.pause === 'function') { 
+                footstepLoopSound.pause();
+                isFootstepPlaying = false;
+            }
+            playSound(sfx.gameOver);
+        }
+        
+        function startGame(){
+            // initAudioContext is called by button event listener
+            
+            if (animationFrameId) { cancelAnimationFrame(animationFrameId); animationFrameId = null; }
+            GAME_WIDTH = GAME_CONTAINER_ELEMENT.offsetWidth; GAME_HEIGHT = GAME_CONTAINER_ELEMENT.offsetHeight;
+            RIPPLE_MAX_RADIUS = Math.max(GAME_WIDTH, GAME_HEIGHT); maxAchievableJumpHeight = calculateJumpPeakYRelative(); 
+            
+            createPlayerParts(); 
+
+            gameState="playing"; 
+            PLAY_BUTTON_ELEMENT.style.display='none'; 
+            REPLAY_BUTTON_ELEMENT.style.display='none'; 
+            PLAYER_ELEMENT.style.display='block'; 
+            LINE_ELEMENT.style.display='block';
+            playerX=GAME_WIDTH*0.1; playerY=GROUND_LEVEL; 
+            playerY_previousFrame = playerY; 
+            velocity=0; jumpVelocity=0; isJumping=false; isMovingLeft=false; isMovingRight=false; isShiftHeld=false; isDashing=false; dashCooldownTimer=0; lastTriggeredDashDirection=0; 
+            isChargingSpace=false; chargeTimer=0; isChargeComplete=false; chargeHoldTimeoutTimer = 0; isChargeTimeoutFlashing = false; chargeLockedAfterTimeout = false; 
+            isRippleActive=false; rippleTimer=0; spacePressed=false; spacePressStartTime=0; 
+            score=0; SCORE_DISPLAY_ELEMENT.textContent="得分: "+score;
+            currentObstacleSpeed = INITIAL_OBSTACLE_SPEED; lastSpeedIncreaseScore = 0; 
+            walkCycleFrame = 0;
+            
+            if (isFootstepPlaying && footstepLoopSound && typeof footstepLoopSound.pause === 'function') { 
+                footstepLoopSound.pause();
+                if(footstepLoopSound) footstepLoopSound.currentTime = 0;
+                isFootstepPlaying = false;
+            }
+            
+            if(rippleSvgCleanupTimeoutId){clearTimeout(rippleSvgCleanupTimeoutId);rippleSvgCleanupTimeoutId=null;}
+            const existingRingSvg=document.getElementById('charge-ring-svg'); if(existingRingSvg&&existingRingSvg.parentNode){existingRingSvg.parentNode.removeChild(existingRingSvg);} chargeRingElement=null; chargeRingPath=null; createChargeRing();
+            
+            playerWidth=PLAYER_BASE_WIDTH; playerHeight=PLAYER_BASE_HEIGHT; 
+            PLAYER_ELEMENT.style.width=playerWidth+'px'; PLAYER_ELEMENT.style.height=playerHeight+'px'; 
+            PLAYER_ELEMENT.style.filter='none'; PLAYER_ELEMENT.style.opacity = '1';
+            PLAYER_ELEMENT.style.left=playerX+'px'; PLAYER_ELEMENT.style.bottom=playerY+'px';
+            
+            obstacles.forEach(obsData => { if(obsData.element.parentNode === GAME_CONTAINER_ELEMENT) { GAME_CONTAINER_ELEMENT.removeChild(obsData.element); } }); obstacles.length=0; obstacleTimer=0;
+            activeParticles.forEach(p=>{if(p.element.parentNode===GAME_CONTAINER_ELEMENT){GAME_CONTAINER_ELEMENT.removeChild(p.element);}}); activeParticles.length=0;
+            
+            trailParticles.forEach(trail => { if (trail.element.parentNode) trail.element.parentNode.removeChild(trail.element); });
+            trailParticles.length = 0;
+            trailSpawnCounter = 0;
+
+            allowObstacleSpawn=false; setTimeout(()=>{if(gameState==="playing")allowObstacleSpawn=true;},3000);
+            
+            playSound(sfx.buttonClick); 
+            if (backgroundMusic && backgroundMusic.paused) { 
+                const playPromise = backgroundMusic.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(e => console.warn("Background music play failed in startGame:", e));
+                }
+            }
+
+            update(); 
+        }
+
+        PLAY_BUTTON_ELEMENT.addEventListener('click', () => {
+            initAudioContext(); 
+            startGame();
+        }); 
+        REPLAY_BUTTON_ELEMENT.addEventListener('click', () => {
+            initAudioContext(); 
+            startGame();
+        });
+
+        document.addEventListener('keydown', function(event) { 
+            if(gameState==='menu'){if(event.key===' '){ initAudioContext(); startGame();event.preventDefault();}return;} 
+            if(gameState==='gameOver')return; 
+            if(gameState==="playing"){ 
+                const key=event.key.toLowerCase(); 
+                if(key===' '&&!spacePressed&&!isDashing&&!isChargingSpace&&!isRippleActive){
+                    spacePressed=true;spacePressStartTime=Date.now();event.preventDefault();
+                } 
+                let willAttemptDash=false;let newDashAttemptDirection=0; 
+                if(!isChargingSpace&&!isRippleActive){ 
+                    if(key==='a'){isMovingLeft=true;if(isShiftHeld){willAttemptDash=true;newDashAttemptDirection=-1;}} 
+                    else if(key==='d'){isMovingRight=true;if(isShiftHeld){willAttemptDash=true;newDashAttemptDirection=1;}} 
+                    else if(event.key==='Shift'||event.code==='ShiftLeft'||event.code==='ShiftRight'){
+                        if(!isShiftHeld){
+                            if(isMovingLeft){willAttemptDash=true;newDashAttemptDirection=-1;}
+                            else if(isMovingRight){willAttemptDash=true;newDashAttemptDirection=1;}
+                        } 
+                        isShiftHeld=true;
+                    }
+                } 
+                if(willAttemptDash&&newDashAttemptDirection!==0){ 
+                    if(isDashing){ 
+                        if(dashDirection!==newDashAttemptDirection){
+                            isDashing=false;dashTimer=0;
+                            playerWidth=PLAYER_BASE_WIDTH;playerHeight=PLAYER_BASE_HEIGHT;
+                            PLAYER_ELEMENT.style.width=playerWidth+'px';PLAYER_ELEMENT.style.height=playerHeight+'px';
+                            PLAYER_ELEMENT.style.filter='none';
+                            dashDirection=newDashAttemptDirection;triggerDash();
+                        }
+                    } else { 
+                        if(dashCooldownTimer<=0){
+                            dashDirection=newDashAttemptDirection;triggerDash();
+                        } else {
+                            if(lastTriggeredDashDirection!==0&&newDashAttemptDirection!==lastTriggeredDashDirection){
+                                dashDirection=newDashAttemptDirection;triggerDash();
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        document.addEventListener('keyup', function(event) { 
+            if(gameState==='gameOver')return; 
+            if(gameState==="playing"){ 
+                const key=event.key.toLowerCase(); 
+                if(key===' '){
+                    if(spacePressed){ 
+                        if(isChargingSpace){ 
+                             if(isChargeComplete){ performSlamAttack(); } 
+                             else { 
+                                 if(playerY>GROUND_LEVEL){isJumping=true;jumpVelocity=-1;} 
+                                 else{isJumping=false;} 
+                                 if(chargeRingElement&&chargeRingElement.parentNode&&!isRippleActive){
+                                     GAME_CONTAINER_ELEMENT.removeChild(chargeRingElement);
+                                     chargeRingElement=null;chargeRingPath=null;
+                                 }
+                             } 
+                             isChargingSpace=false; isChargeComplete=false; 
+                             chargeHoldTimeoutTimer = 0; isChargeTimeoutFlashing = false; 
+                        } else { 
+                            let onSupport=playerY===GROUND_LEVEL; 
+                            if(!onSupport){ 
+                                for(const oData of obstacles){
+                                    if(!oData.isFalling){
+                                        const o=oData.element; const oTop=oData.y+o.offsetHeight;
+                                        if(Math.abs(playerY-oTop)<5){
+                                            const oL=oData.x;const oW=o.offsetWidth;
+                                            if(playerX<oL+oW&&playerX+playerWidth>oL){onSupport=true;break;}
+                                        }
+                                    }
+                                }
+                            }
+                            if(onSupport&&!isJumping&&!isDashing&&!isRippleActive){
+                                isJumping=true;jumpVelocity=jumpPower;
+                                playSound(sfx.jump);
+                            }
+                        }
+                    } 
+                    spacePressed=false;spacePressStartTime=0; 
+                    chargeLockedAfterTimeout = false; 
+                } 
+                if(key==='a')isMovingLeft=false; 
+                else if(key==='d')isMovingRight=false; 
+                else if(event.key==='Shift'||event.code==='ShiftLeft'||event.code==='ShiftRight')isShiftHeld=false;
+            }
+        });
+
+        function createAndAddParticle(x,y,vx,vy){const p=document.createElement('div');p.classList.add('particle');p.style.left=x+'px';p.style.bottom=y+'px';GAME_CONTAINER_ELEMENT.appendChild(p);activeParticles.push({element:p,x:x,y:y,vx:vx,vy:vy,life:PARTICLE_LIFESPAN_FRAMES});}
+        function spawnParticlesFromObstacle(oElem){
+            const cX=oElem.offsetLeft+oElem.offsetWidth/2;
+            const cY=parseFloat(oElem.style.bottom)+oElem.offsetHeight/2;
+            for(let i=0;i<NUM_PARTICLES_ON_BREAK;i++){const a=Math.random()*Math.PI*2;const s=Math.random()*4+1.5;createAndAddParticle(cX-3,cY-3,Math.cos(a)*s,Math.sin(a)*s);}
+            playSound(sfx.obstacleBreak);
+        }
+        
+        function createObstacle() { 
+            const obstacleElement = document.createElement('div');
+            obstacleElement.classList.add('obstacle');
+            const maxJumpHeightPixels = maxAchievableJumpHeight; 
+            const width = Math.floor(Math.random() * (obstacleMaxWidth - obstacleMinWidth + 1)) + obstacleMinWidth;
+            let height = Math.floor(Math.random() * (obstacleMaxHeight - obstacleMinHeight + 1)) + obstacleMinHeight; 
+            height = Math.min(height, maxJumpHeightPixels); height = Math.max(height, 10); 
+            obstacleElement.style.width = width + 'px'; obstacleElement.style.height = height + 'px';
+            const startX = GAME_WIDTH + 50; const startY = GAME_HEIGHT + Math.random() * 50; 
+            obstacleElement.style.left = startX + 'px'; obstacleElement.style.bottom = startY + 'px';
+            GAME_CONTAINER_ELEMENT.appendChild(obstacleElement);
+            obstacles.push({ element: obstacleElement, x: startX, y: startY, vy: 0, isFalling: true }); 
+        }
+        
+        function checkRectCollision(r1,r2){ return (r1.left < r2.right && r1.right > r2.left && r1.top < r2.bottom && r1.bottom > r2.top); }
+        function getGameRelativeRect(xL,yB,w,h){ return {left:xL,top:GAME_HEIGHT-(yB+h),right:xL+w,bottom:GAME_HEIGHT-yB};}
+        
+        function getCollidingObstacleDataAt(targetPlayerX, currentPlayerY, currentPlayerWidth, currentPlayerHeight) {
+            const proposedPlayerRect = getGameRelativeRect(targetPlayerX, currentPlayerY, currentPlayerWidth, currentPlayerHeight);
+            for (const obsData of obstacles) {
+                if (!obsData.isFalling) { 
+                    const obstacleElement = obsData.element;
+                    const obsRect = getGameRelativeRect(obsData.x, obsData.y, obstacleElement.offsetWidth, obstacleElement.offsetHeight);
+                    if (checkRectCollision(proposedPlayerRect, obsRect)) {
+                        return obsData; 
+                    }
+                }
+            }
+            return null; 
+        }
+
+        function spawnTrailParticle() {
+            const trailElement = document.createElement('div');
+            trailElement.classList.add('trail');
+            const trailSizeFactor = isDashing ? 0.9 : 0.7; 
+            const currentTrailWidth = playerWidth * trailSizeFactor;
+            const currentTrailHeight = playerHeight * trailSizeFactor;
+            trailElement.style.width = currentTrailWidth + 'px';
+            trailElement.style.height = currentTrailHeight + 'px';
+            trailElement.style.left = (playerX + (playerWidth - currentTrailWidth)/2) + 'px'; 
+            trailElement.style.bottom = (playerY + (playerHeight - currentTrailHeight)/2) + 'px';
+            trailElement.style.opacity = TRAIL_INITIAL_OPACITY;
+            if (isDashing) { 
+                 trailElement.style.backgroundColor = 'rgba(30, 30, 30, 0.4)';
+                 trailElement.style.transform = PLAYER_ELEMENT.style.transform; 
+            }
+            GAME_CONTAINER_ELEMENT.appendChild(trailElement);
+            trailParticles.push({ element: trailElement, life: TRAIL_LIFESPAN_FRAMES, initialOpacity: TRAIL_INITIAL_OPACITY });
+        }
+
+        function updatePlayerVisuals(currentContainerWidth, currentContainerHeight) {
+            if (!PLAYER_HEAD_ELEMENT || !PLAYER_BODY_ELEMENT || 
+                !PLAYER_LEFT_LEG_ELEMENT || !PLAYER_RIGHT_LEG_ELEMENT ||
+                !PLAYER_LEFT_ARM_ELEMENT || !PLAYER_RIGHT_ARM_ELEMENT) {
+                // console.error("Player parts not defined in updatePlayerVisuals"); // Can be noisy
+                return; 
+            }
+
+            const headPropH = 0.28; 
+            const bodyPropH = 0.37; 
+            const legPropH  = 0.35; 
+            const armPropH = 0.33;  
+            const armWidthProp = 0.12; 
+
+            let headH = PLAYER_BASE_HEIGHT * headPropH;
+            let bodyH = PLAYER_BASE_HEIGHT * bodyPropH;
+            let legBaseH = PLAYER_BASE_HEIGHT * legPropH;
+            let armBaseH = PLAYER_BASE_HEIGHT * armPropH; 
+            let armW = PLAYER_BASE_WIDTH * armWidthProp;
+
+            let headW = currentContainerWidth * 0.5; 
+            let headTop = 0;
+            let headL = (currentContainerWidth - headW) / 2;
+
+            let bodyW = currentContainerWidth * 0.70; 
+            let bodyTop = headH; 
+            let bodyL = (currentContainerWidth - bodyW) / 2;
+
+            let legW = PLAYER_BASE_WIDTH * 0.18; 
+            let legTop = headH + bodyH; 
+            let leftLegL = bodyL + (bodyW * 0.20) - (legW * 0.5); 
+            let rightLegL = bodyL + (bodyW * 0.80) - (legW * 0.5);
+            let leftLegH = legBaseH;
+            let rightLegH = legBaseH;
+            let leftLegTop = legTop;
+            let rightLegTop = legTop;
+
+            let armTop = headH + bodyH * 0.05; 
+            let leftArmL = bodyL - armW + armW * 0.2; 
+            let rightArmL = bodyL + bodyW - armW * 0.8;
+            let leftArmH = armBaseH;
+            let rightArmH = armBaseH;
+            let leftArmRot = 10; 
+            let rightArmRot = -10; 
+
+            PLAYER_ELEMENT.style.transform = 'skewX(0deg)'; 
+            let effectiveContainerHeight = currentContainerHeight; 
+            
+            const isPlayerActivelyMovingOnGroundForVisuals = (isMovingLeft || isMovingRight) && playerY === GROUND_LEVEL && !isDashing && !isJumping && !isChargingSpace;
+
+
+            if (isDashing) {
+                if (dashDirection === 1) PLAYER_ELEMENT.style.transform = 'skewX(-10deg)';
+                if (dashDirection === -1) PLAYER_ELEMENT.style.transform = 'skewX(10deg)';
+                
+                effectiveContainerHeight = PLAYER_BASE_HEIGHT * DASH_SQUASH_HEIGHT_FACTOR;
+                headH = effectiveContainerHeight * headPropH; 
+                bodyH = effectiveContainerHeight * bodyPropH;
+                bodyTop = headH;
+                
+                legW = PLAYER_BASE_WIDTH * DASH_STRETCH_WIDTH_FACTOR * 0.08; 
+                legBaseH = effectiveContainerHeight * (legPropH + bodyPropH * 0.15); 
+                legTop = headH + bodyH * 0.6; 
+                leftLegH = legBaseH; rightLegH = legBaseH;
+                if (dashDirection === 1) { 
+                    leftLegL = bodyL + (bodyW * 0.15) - (legW*0.5); rightLegL = bodyL + (bodyW * 0.35) - (legW*0.5);
+                } else { 
+                    leftLegL = bodyL + (bodyW * 0.65) - (legW*0.5); rightLegL = bodyL + (bodyW * 0.85) - (legW*0.5);
+                }
+                leftLegTop = legTop; rightLegTop = legTop;
+
+                armW = PLAYER_BASE_WIDTH * DASH_STRETCH_WIDTH_FACTOR * armWidthProp * 0.8; 
+                armBaseH = effectiveContainerHeight * armPropH * 1.1; 
+                armTop = headH + bodyH * 0.1;
+                leftArmH = armBaseH; rightArmH = armBaseH;
+                if (dashDirection === 1) { 
+                    leftArmL = bodyL - armW * 0.5; 
+                    rightArmL = bodyL + armW * 0.2; 
+                    leftArmRot = 160; rightArmRot = 170;
+                } else { 
+                    leftArmL = bodyL + bodyW - armW * 1.2; 
+                    rightArmL = bodyL + bodyW - armW * 0.5; 
+                    leftArmRot = -170; rightArmRot = -160;
+                }
+
+            } else if (isJumping) {
+                effectiveContainerHeight = PLAYER_BASE_HEIGHT;
+                headH = effectiveContainerHeight * headPropH; bodyH = effectiveContainerHeight * bodyPropH; bodyTop = headH;
+                
+                legW = PLAYER_BASE_WIDTH * 0.18;
+                legBaseH = effectiveContainerHeight * legPropH * 0.7; 
+                legTop = bodyTop + bodyH * 0.6; 
+                leftLegL = bodyL + (bodyW * 0.25) - (legW*0.5);
+                rightLegL = bodyL + (bodyW * 0.75) - (legW*0.5);
+                leftLegH = legBaseH; rightLegH = legBaseH;
+                leftLegTop = legTop; rightLegTop = legTop;
+
+                armBaseH = effectiveContainerHeight * armPropH * 0.9;
+                armTop = headH + bodyH * 0.1;
+                leftArmH = armBaseH; rightArmH = armBaseH;
+                leftArmL = bodyL - armW * 0.7; 
+                rightArmL = bodyL + bodyW - armW * 0.3;
+                leftArmRot = -45; 
+                rightArmRot = 45;
+
+
+            } else if (isChargingSpace) {
+                effectiveContainerHeight = PLAYER_BASE_HEIGHT;
+                const pulseFactor = 1 + Math.sin(chargeTimer * 0.25) * 0.08;
+                
+                headH = effectiveContainerHeight * headPropH; bodyH = effectiveContainerHeight * bodyPropH; bodyTop = headH;
+                legBaseH = effectiveContainerHeight * legPropH; legTop = headH + bodyH;
+
+                if (isChargeComplete) { 
+                    headW = currentContainerWidth * 0.45; headL = (currentContainerWidth-headW)/2;
+                    bodyW = currentContainerWidth * 0.8; bodyL = (currentContainerWidth-bodyW)/2;
+                    
+                    legW = PLAYER_BASE_WIDTH * 0.22;
+                    leftLegL = bodyL + (bodyW * 0.15) - (legW*0.5);
+                    rightLegL = bodyL + (bodyW * 0.85) - (legW*0.5);
+
+                    armBaseH = effectiveContainerHeight * armPropH * 1.1;
+                    armTop = headH + bodyH * 0.0;
+                    leftArmH = armBaseH; rightArmH = armBaseH;
+                    leftArmL = bodyL - armW * 0.8; 
+                    rightArmL = bodyL + bodyW - armW * 0.2;
+                    leftArmRot = -70; 
+                    rightArmRot = 70;
+
+                } else { 
+                    bodyW = currentContainerWidth * 0.75 * pulseFactor; bodyL = (currentContainerWidth-bodyW)/2;
+                    
+                    legW = PLAYER_BASE_WIDTH * 0.20 * pulseFactor;
+                    legBaseH = effectiveContainerHeight * legPropH * 0.85 / (pulseFactor*0.9);
+                    leftLegL = bodyL + (bodyW * 0.1) - (legW*0.5);
+                    rightLegL = bodyL + (bodyW * 0.9) - (legW*0.5);
+
+                    armBaseH = effectiveContainerHeight * armPropH * (0.8 + pulseFactor * 0.2);
+                    armTop = headH + bodyH * 0.05;
+                    leftArmH = armBaseH; rightArmH = armBaseH;
+                    leftArmL = bodyL - armW * (0.6 * pulseFactor); 
+                    rightArmL = bodyL + bodyW - armW * (0.4 / pulseFactor);
+                    leftArmRot = -30 * pulseFactor;
+                    rightArmRot = 30 * pulseFactor;
+                }
+                leftLegH = legBaseH; rightLegH = legBaseH;
+                leftLegTop = legTop; rightLegTop = legTop;
+
+            } else { 
+                effectiveContainerHeight = PLAYER_BASE_HEIGHT;
+                headH = effectiveContainerHeight * headPropH; bodyH = effectiveContainerHeight * bodyPropH; bodyTop = headH;
+                legBaseH = effectiveContainerHeight * legPropH; legTop = headH + bodyH;
+                armBaseH = effectiveContainerHeight * armPropH; armTop = headH + bodyH * 0.05;
+                
+                if (isPlayerActivelyMovingOnGroundForVisuals) { 
+                    const strideAmount = PLAYER_BASE_WIDTH * 0.10; 
+                    const legBendAmount = legBaseH * 0.25; 
+                    const armSwingAmount = 45; 
+                    const armBendFactor = 0.85; 
+
+                    const leftLegAngle = walkCycleFrame;
+                    leftLegL = (bodyL + (bodyW * 0.20) - (legW * 0.5)) + Math.sin(leftLegAngle) * strideAmount;
+                    leftLegH = legBaseH - Math.max(0, Math.cos(leftLegAngle)) * legBendAmount; 
+                    leftLegTop = legTop + (legBaseH - leftLegH) * 0.3; 
+
+                    const rightLegAngle = walkCycleFrame + Math.PI; 
+                    rightLegL = (bodyL + (bodyW * 0.80) - (legW * 0.5)) + Math.sin(rightLegAngle) * strideAmount;
+                    rightLegH = legBaseH - Math.max(0, Math.cos(rightLegAngle)) * legBendAmount;
+                    rightLegTop = legTop + (legBaseH - rightLegH) * 0.3;
+                    
+                    leftArmRot = Math.sin(rightLegAngle) * armSwingAmount; 
+                    rightArmRot = Math.sin(leftLegAngle) * armSwingAmount; 
+                    leftArmH = armBaseH * (1 - Math.abs(Math.sin(rightLegAngle+Math.PI/2)) * (1-armBendFactor) ); 
+                    rightArmH = armBaseH * (1 - Math.abs(Math.sin(leftLegAngle+Math.PI/2)) * (1-armBendFactor) );
+                    leftArmL = bodyL - armW + armW * 0.2 + Math.cos(rightLegAngle) * strideAmount * 0.1; 
+                    rightArmL = bodyL + bodyW - armW * 0.8 + Math.cos(leftLegAngle) * strideAmount * 0.1;
+                } else { 
+                    leftLegL = bodyL + (bodyW * 0.20) - (legW * 0.5);
+                    rightLegL = bodyL + (bodyW * 0.80) - (legW * 0.5);
+                    leftLegH = legBaseH; rightLegH = legBaseH;
+                    leftLegTop = legTop; rightLegTop = legTop;
+                    
+                    leftArmL = bodyL - armW + armW*0.2; 
+                    rightArmL = bodyL + bodyW - armW*0.8;
+                    leftArmH = armBaseH; rightArmH = armBaseH;
+                    leftArmRot = 5; rightArmRot = -5;
+                }
+            }
+
+            PLAYER_HEAD_ELEMENT.style.width = headW + 'px';
+            PLAYER_HEAD_ELEMENT.style.height = headH + 'px';
+            PLAYER_HEAD_ELEMENT.style.top = headTop + 'px';
+            PLAYER_HEAD_ELEMENT.style.left = headL + 'px';
+
+            PLAYER_BODY_ELEMENT.style.width = bodyW + 'px';
+            PLAYER_BODY_ELEMENT.style.height = bodyH + 'px';
+            PLAYER_BODY_ELEMENT.style.top = bodyTop + 'px';
+            PLAYER_BODY_ELEMENT.style.left = bodyL + 'px';
+
+            PLAYER_LEFT_LEG_ELEMENT.style.width = legW + 'px';
+            PLAYER_LEFT_LEG_ELEMENT.style.height = leftLegH + 'px';
+            PLAYER_LEFT_LEG_ELEMENT.style.top = leftLegTop + 'px';
+            PLAYER_LEFT_LEG_ELEMENT.style.left = leftLegL + 'px';
+
+            PLAYER_RIGHT_LEG_ELEMENT.style.width = legW + 'px';
+            PLAYER_RIGHT_LEG_ELEMENT.style.height = rightLegH + 'px';
+            PLAYER_RIGHT_LEG_ELEMENT.style.top = rightLegTop + 'px';
+            PLAYER_RIGHT_LEG_ELEMENT.style.left = rightLegL + 'px';
+
+            PLAYER_LEFT_ARM_ELEMENT.style.width = armW + 'px';
+            PLAYER_LEFT_ARM_ELEMENT.style.height = leftArmH + 'px';
+            PLAYER_LEFT_ARM_ELEMENT.style.top = armTop + 'px';
+            PLAYER_LEFT_ARM_ELEMENT.style.left = leftArmL + 'px';
+            PLAYER_LEFT_ARM_ELEMENT.style.transform = `rotate(${leftArmRot}deg)`;
+
+            PLAYER_RIGHT_ARM_ELEMENT.style.width = armW + 'px';
+            PLAYER_RIGHT_ARM_ELEMENT.style.height = rightArmH + 'px';
+            PLAYER_RIGHT_ARM_ELEMENT.style.top = armTop + 'px';
+            PLAYER_RIGHT_ARM_ELEMENT.style.left = rightArmL + 'px';
+            PLAYER_RIGHT_ARM_ELEMENT.style.transform = `rotate(${rightArmRot}deg)`;
+
+
+            if (isChargingSpace && isChargeComplete && chargeHoldTimeoutTimer > 0) {
+                PLAYER_ELEMENT.style.opacity = isChargeTimeoutFlashing ? '1' : '0.4';
+            } else if (isChargingSpace && !isChargeComplete) { 
+                PLAYER_ELEMENT.style.opacity = '1';
+            } else if (!isChargingSpace && PLAYER_ELEMENT.style.opacity !== '1') { 
+                PLAYER_ELEMENT.style.opacity = '1';
+            }
+        }
+
+
+        function update() {
+            if (gameState === 'gameOver') { return; } 
+            
+            if (gameState === "playing") {
+                if (dashCooldownTimer > 0) dashCooldownTimer--;
+
+                if (spacePressed && !isChargingSpace && !isRippleActive && !isDashing && !chargeLockedAfterTimeout) { if (Date.now() - spacePressStartTime >= HOLD_TO_CHARGE_DURATION_MS) { startChargeSequence(); } }
+
+                let landedThisFrame = false; 
+
+                if (isRippleActive) { 
+                     rippleTimer++; const rProg = rippleTimer / RIPPLE_DURATION_FRAMES; const initR = (PLAYER_BASE_WIDTH / 2) + CHARGE_RING_RADIUS_OFFSET; currentRippleRadius = initR + (RIPPLE_MAX_RADIUS - initR) * rProg; if (chargeRingPath) { chargeRingPath.setAttribute('r', currentRippleRadius); chargeRingPath.style.opacity = Math.max(0, 0.8 - rProg * 0.8).toString(); } if (chargeRingElement) { chargeRingElement.style.left = (rippleStartX - RIPPLE_MAX_RADIUS) + 'px'; chargeRingElement.style.bottom = (GAME_HEIGHT - rippleStartY - RIPPLE_MAX_RADIUS) + 'px'; } const rippleCirc = { x: rippleStartX, y: GAME_HEIGHT - rippleStartY, r: currentRippleRadius }; for (let i = obstacles.length - 1; i >= 0; i--) { const oData = obstacles[i]; const o = oData.element; const oRect = { left: oData.x, right: oData.x + o.offsetWidth, top: GAME_HEIGHT - (oData.y + o.offsetHeight), bottom: GAME_HEIGHT - oData.y }; if (checkCircleRectCollision(rippleCirc, oRect)) { score++; spawnParticlesFromObstacle(o); GAME_CONTAINER_ELEMENT.removeChild(o); obstacles.splice(i, 1); } } if (rippleTimer >= RIPPLE_DURATION_FRAMES) { isRippleActive = false; rippleTimer = 0; if (chargeRingElement && chargeRingElement.parentNode) { GAME_CONTAINER_ELEMENT.removeChild(chargeRingElement); chargeRingElement = null; chargeRingPath = null; } if (rippleSvgCleanupTimeoutId) { clearTimeout(rippleSvgCleanupTimeoutId); rippleSvgCleanupTimeoutId = null; } }
+                }
+                else if (isChargingSpace) { 
+                     isJumping = false; jumpVelocity = 0; 
+                    if (chargeStartedInAir) { playerY = chargeTargetY + Math.sin(chargeTimer * CHARGE_BOB_FREQUENCY) * CHARGE_BOB_AMPLITUDE; } 
+                    else { if (playerY < chargeTargetY && chargeTimer < CHARGE_DURATION_FRAMES * 0.35) { playerY += (chargeTargetY - playerY) * CHARGE_FLOAT_UP_SPEED_FACTOR; if (playerY > chargeTargetY) playerY = chargeTargetY; } else { playerY = chargeTargetY; } } 
+                    if (playerY + playerHeight > GAME_HEIGHT) playerY = GAME_HEIGHT - playerHeight; if (playerY < GROUND_LEVEL) playerY = GROUND_LEVEL; 
+                    chargeTimer++; const cProg = Math.min(chargeTimer / CHARGE_DURATION_FRAMES, 1);
+                    if (chargeRingElement && chargeRingPath) { const initR = (PLAYER_BASE_WIDTH / 2) + CHARGE_RING_RADIUS_OFFSET; chargeRingPath.setAttribute('r', initR); const circ = 2 * Math.PI * initR; chargeRingPath.setAttribute('stroke-dashoffset', circ * (1 - cProg)); const svgCX = playerX + PLAYER_BASE_WIDTH / 2; const svgCY = playerY + PLAYER_BASE_HEIGHT / 2; chargeRingElement.style.left = (svgCX - RIPPLE_MAX_RADIUS) + 'px'; chargeRingElement.style.bottom = (svgCY - RIPPLE_MAX_RADIUS) + 'px'; } 
+                    if (cProg >= 1 && !isChargeComplete) { 
+                        isChargeComplete = true; chargeHoldTimeoutTimer = 0; 
+                        if (chargeRingPath) chargeRingPath.style.stroke = '#FF5733';
+                        playSound(sfx.chargeComplete); 
+                    }
+                    if (isChargeComplete) { chargeHoldTimeoutTimer++; if (chargeHoldTimeoutTimer > CHARGE_HOLD_TIMEOUT_FRAMES) { isChargingSpace = false; isChargeComplete = false; chargeHoldTimeoutTimer = 0; isChargeTimeoutFlashing = false; chargeLockedAfterTimeout = true; if (playerY > GROUND_LEVEL) { isJumping = true; jumpVelocity = -1; } else { isJumping = false; } if (chargeRingElement && chargeRingElement.parentNode) { GAME_CONTAINER_ELEMENT.removeChild(chargeRingElement); chargeRingElement = null; chargeRingPath = null; } } else { isChargeTimeoutFlashing = (chargeHoldTimeoutTimer % (FLASH_INTERVAL_FRAMES * 2)) < FLASH_INTERVAL_FRAMES; } }
+                } else if (isDashing) { 
+                    dashTimer--; 
+                    let tX=playerX; for(let d=0;d<DASH_SPEED;d++){if(!isDashing)break; let nX=tX+dashDirection; if(nX<0){tX=0;isDashing=false;break;}if(nX+playerWidth>GAME_WIDTH){tX=GAME_WIDTH-playerWidth;isDashing=false;break;} const dRect=getGameRelativeRect(nX,playerY,playerWidth,playerHeight); for(let i=obstacles.length - 1;i>=0;i--){const oData=obstacles[i]; const o=oData.element; const oRect=getGameRelativeRect(oData.x,oData.y,o.offsetWidth,o.offsetHeight);if(checkRectCollision(dRect,oRect)){const pT=playerY+playerHeight;const pB=playerY;const oT=oData.y+o.offsetHeight;const oB=oData.y;if(pB<oT&&pT>oB){score++; spawnParticlesFromObstacle(o);GAME_CONTAINER_ELEMENT.removeChild(o);obstacles.splice(i,1);}}}tX=nX;} playerX=tX; 
+                    if(playerY>GROUND_LEVEL){playerY-=DASH_FALL_SPEED;if(playerY<=GROUND_LEVEL){playerY=GROUND_LEVEL; landedThisFrame = true;}}
+                    if(dashTimer<=0)isDashing=false; 
+                } else { 
+                    if(isMovingLeft)velocity=Math.max(velocity-acceleration,-maxVelocity); else if(isMovingRight)velocity=Math.min(velocity+acceleration,maxVelocity); else{if(velocity>0)velocity=Math.max(0,velocity-deceleration);else if(velocity<0)velocity=Math.min(0,velocity+deceleration);}
+                    
+                    if (velocity !== 0) {
+                        let tempProposedX = playerX;
+                        const step = Math.sign(velocity);
+                        const numSteps = Math.floor(Math.abs(velocity));
+
+                        for (let i = 0; i < numSteps; i++) {
+                            let nextX = tempProposedX + step;
+                            if (nextX < 0) { tempProposedX = 0; velocity = 0; break; }
+                            if (nextX + playerWidth > GAME_WIDTH) { tempProposedX = GAME_WIDTH - playerWidth; velocity = 0; break; }
+                            const collidingObsData = getCollidingObstacleDataAt(nextX, playerY, playerWidth, playerHeight);
+                            if (collidingObsData) {
+                                const obstacleElement = collidingObsData.element;
+                                const obsTopSurfaceY = collidingObsData.y + obstacleElement.offsetHeight;
+                                if (playerY < obsTopSurfaceY - 1) { 
+                                    if (step > 0) { tempProposedX = collidingObsData.x - playerWidth; } 
+                                    else { tempProposedX = collidingObsData.x + obstacleElement.offsetWidth; }
+                                    velocity = 0; break;
+                                }
+                            }
+                            tempProposedX = nextX;
+                        }
+                        playerX = tempProposedX;
+                    }
+
+                    if(isJumping){ 
+                        playerY+=jumpVelocity;if(jumpVelocity>0)jumpVelocity-=upGravity;else jumpVelocity-=downGravity; 
+                        if(playerY+playerHeight>GAME_HEIGHT){playerY=GAME_HEIGHT-playerHeight;jumpVelocity=0;} 
+                        if(playerY<=GROUND_LEVEL){
+                            playerY=GROUND_LEVEL;
+                            isJumping=false;
+                            jumpVelocity=0;
+                            landedThisFrame=true; 
+                        } 
+                        else if(jumpVelocity<=0 && !landedThisFrame){ 
+                            const cRect=getGameRelativeRect(playerX,playerY,playerWidth,playerHeight);
+                            for(let i=obstacles.length-1;i>=0;i--){
+                                const oData=obstacles[i];const o=oData.element;const oTop=oData.y+o.offsetHeight;
+                                const oRect=getGameRelativeRect(oData.x,oData.y,o.offsetWidth,o.offsetHeight);
+                                if(checkRectCollision(cRect,oRect)){
+                                    if(playerY<=oTop && playerY_previousFrame+1>=oTop && (playerX+playerWidth>oData.x+2&&playerX<oData.x+o.offsetWidth-2)){
+                                        score++; spawnParticlesFromObstacle(o);GAME_CONTAINER_ELEMENT.removeChild(o);obstacles.splice(i,1);
+                                        playerY=oTop+0.1;jumpVelocity=BOUNCE_POWER_ON_SMASH;isJumping=true; 
+                                        playSound(sfx.jump, 0.4); 
+                                        landedThisFrame = false; 
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if(!isJumping && playerY>GROUND_LEVEL){ 
+                        let supp=false;let hY=GROUND_LEVEL;
+                        for(const oData of obstacles){
+                            if(!oData.isFalling){ 
+                                const o=oData.element; const oL=oData.x;const oR=oL+o.offsetWidth;
+                                const oTop=oData.y+o.offsetHeight;const hO=(playerX<oR&&playerX+playerWidth>oL);
+                                if(hO&&Math.abs(playerY-oTop)<2){if(oTop>hY)hY=oTop;supp=true;}
+                            }
+                        }
+                        if(supp){playerY=hY;isJumping=false;jumpVelocity=0; landedThisFrame = true;} 
+                        else{isJumping=true;jumpVelocity=0;} 
+                    }
+                    if(!isJumping&&playerY<GROUND_LEVEL) { 
+                         playerY=GROUND_LEVEL;
+                         landedThisFrame = true; 
+                    }
+                }
+
+                if (landedThisFrame && playerY_previousFrame > GROUND_LEVEL + 0.01 && animationFrameId) { 
+                    playSound(sfx.land);
+                }
+
+                const shouldPlayFootsteps = (isMovingLeft || isMovingRight) && 
+                                            playerY === GROUND_LEVEL && 
+                                            !isJumping && !isDashing && !isChargingSpace && !isRippleActive;
+
+                if (shouldPlayFootsteps) {
+                    if (!isFootstepPlaying && footstepLoopSound && (footstepLoopSound.paused || footstepLoopSound.ended)) {
+                        const playPromise = footstepLoopSound.play();
+                        if (playPromise !== undefined) {
+                            playPromise.catch(e => {/* console.warn("Footstep loop play failed:", e) */});
+                        }
+                    }
+                    isFootstepPlaying = true;
+                } else {
+                    if (isFootstepPlaying && footstepLoopSound && !footstepLoopSound.paused) {
+                        footstepLoopSound.pause();
+                    }
+                    isFootstepPlaying = false;
+                }
+                
+                const isPlayerActivelyMovingOnGroundForVisuals = (isMovingLeft || isMovingRight) && playerY === GROUND_LEVEL && !isDashing && !isJumping && !isChargingSpace;
+                if (isPlayerActivelyMovingOnGroundForVisuals) {
+                     walkCycleFrame = (walkCycleFrame + 0.45) % (Math.PI * 2);
+                } else {
+                     walkCycleFrame = 0;
+                }
+
+
+                if (isDashing) {
+                    playerWidth = PLAYER_BASE_WIDTH * DASH_STRETCH_WIDTH_FACTOR;
+                    playerHeight = PLAYER_BASE_HEIGHT * DASH_SQUASH_HEIGHT_FACTOR;
+                    PLAYER_ELEMENT.style.filter = 'blur(1.2px)';
+                } else {
+                    playerWidth = PLAYER_BASE_WIDTH;
+                    playerHeight = PLAYER_BASE_HEIGHT;
+                    PLAYER_ELEMENT.style.filter = 'none';
+                }
+                PLAYER_ELEMENT.style.width = playerWidth + 'px';
+                PLAYER_ELEMENT.style.height = playerHeight + 'px';
+
+                updatePlayerVisuals(playerWidth, playerHeight); 
+
+                PLAYER_ELEMENT.style.left = playerX + 'px';
+                PLAYER_ELEMENT.style.bottom = playerY + 'px';
+
+
+                trailSpawnCounter++;
+                if ((Math.abs(velocity) > 0.1 || isJumping || isDashing) && trailSpawnCounter >= TRAIL_SPAWN_INTERVAL) {
+                    spawnTrailParticle();
+                    trailSpawnCounter = 0;
+                }
+
+                if (allowObstacleSpawn) {
+                    obstacleTimer++;
+                    if (obstacleTimer >= (Math.random() * (obstacleSpawnIntervalMax - obstacleSpawnIntervalMin) + obstacleSpawnIntervalMin)) { createObstacle(); obstacleTimer = 0; }
+                }
+
+                for (let i = obstacles.length - 1; i >= 0; i--) { 
+                    const obsData = obstacles[i]; 
+                    const obstacleElement = obsData.element; 
+                    if (obsData.isFalling) {
+                        obsData.vy -= obstacleGravity; obsData.y += obsData.vy;
+                        if (obsData.y <= GROUND_LEVEL) { obsData.y = GROUND_LEVEL; obsData.vy = 0; obsData.isFalling = false; }
+                    }
+                    obsData.x -= currentObstacleSpeed; 
+                    obstacleElement.style.left = obsData.x + 'px'; obstacleElement.style.bottom = obsData.y + 'px';
+                    
+                    if (!isRippleActive && !isDashing && !obsData.isFalling) { 
+                         const currentPlayerRect = getGameRelativeRect(playerX, playerY, playerWidth, playerHeight);
+                         const obstacleRectForPush = getGameRelativeRect(obsData.x, obsData.y, obstacleElement.offsetWidth, obstacleElement.offsetHeight);
+                         if (checkRectCollision(currentPlayerRect, obstacleRectForPush)) {
+                             const onTop = !isJumping && Math.abs(playerY - (obsData.y + obstacleElement.offsetHeight)) < 2 && (playerX < obsData.x + obstacleElement.offsetWidth && playerX + playerWidth > obsData.x);
+                             if (!onTop) { 
+                                 const oC = obsData.x + obstacleElement.offsetWidth / 2; const cC = playerX + playerWidth / 2; let pX = playerX; if (oC > cC) pX -= pushForce; else pX += pushForce; 
+                                 if (pX + playerWidth > GAME_WIDTH) pX = GAME_WIDTH - playerWidth;
+                                 
+                                 let canP = true; const pRect = getGameRelativeRect(pX, playerY, playerWidth, playerHeight);
+                                 for (const otherOData of obstacles) { if (otherOData === obsData) continue; const otherO = otherOData.element; const otherRect = getGameRelativeRect(otherOData.x, otherOData.y, otherO.offsetWidth, otherO.offsetHeight); if (checkRectCollision(pRect, otherRect)) { canP = false; break; } }
+                                 
+                                 if (canP) { 
+                                     playerX = pX; 
+                                     if (playerX <= 0) { triggerGameOver(); return; }
+                                 }
+                             }
+                         }
+                     }
+                    if (obsData.x + obstacleElement.offsetWidth < 0) { score++; GAME_CONTAINER_ELEMENT.removeChild(obstacleElement); obstacles.splice(i, 1); }
+                } 
+
+                 for (let i = activeParticles.length - 1; i >= 0; i--) { 
+                     const p = activeParticles[i]; 
+                     p.vy -= PARTICLE_GRAVITY; p.vx *= PARTICLE_FRICTION; p.vy *= PARTICLE_FRICTION; 
+                     p.x += p.vx; p.y += p.vy; p.life--; 
+                     if (p.life <= 0 || p.y < -10 || p.x < -10 || p.x > GAME_WIDTH + 10 ) { 
+                         if (p.element.parentNode === GAME_CONTAINER_ELEMENT) GAME_CONTAINER_ELEMENT.removeChild(p.element); 
+                         activeParticles.splice(i, 1); 
+                     } else { 
+                         p.element.style.left = p.x + 'px'; 
+                         p.element.style.bottom = p.y + 'px'; 
+                     } 
+                 }
+                
+                for (let i = trailParticles.length - 1; i >= 0; i--) {
+                    const trail = trailParticles[i];
+                    trail.life--;
+                    if (trail.life <= 0) {
+                        if (trail.element.parentNode) { GAME_CONTAINER_ELEMENT.removeChild(trail.element); }
+                        trailParticles.splice(i, 1);
+                    } else {
+                        trail.element.style.opacity = (trail.life / TRAIL_LIFESPAN_FRAMES) * trail.initialOpacity;
+                    }
+                }
+
+                if (score > 0 && score % 10 === 0 && score > lastSpeedIncreaseScore) {
+                    currentObstacleSpeed += OBSTACLE_SPEED_INCREMENT;
+                    lastSpeedIncreaseScore = score;
+                }
+                SCORE_DISPLAY_ELEMENT.textContent = "得分: " + score;
+
+                playerY_previousFrame = playerY; 
+            } 
+            
+            if (gameState !== 'gameOver') { 
+                animationFrameId = requestAnimationFrame(update); 
+            } else {
+                animationFrameId = null; 
+            }
+        }
+    </script>
+</body>
+</html>
